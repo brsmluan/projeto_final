@@ -16,11 +16,11 @@
 #define VRX_PIN 27       // Eixo X (horizontal) do joystick, controla a raquete
 #define SW_PIN 22        // Botão do joystick: pausa/retoma
 #define BUTTON_A 5       // Botão A: inicia o jogo
-#define BUTTON_B 6       // Botão B: sem função por enquanto
+#define BUTTON_B 6       // Botão B: reinicia o jogo
 
 // Pinos dos LEDs
 #define LED_R 13         // LED vermelho (game over)
-#define LED_G 11         // LED verde (jogo em andamento)
+#define LED_G 11         // LED verde (jogo em andamento ou vitória)
 #define LED_B 12         // LED azul (aguardando início ou pausado)
 
 // Dimensões do display
@@ -28,7 +28,7 @@
 #define SCREEN_HEIGHT 64
 
 // Estados do jogo
-typedef enum { WAITING, PLAYING, PAUSED, GAME_OVER } game_state_t;
+typedef enum { WAITING, PLAYING, PAUSED, GAME_OVER, WIN } game_state_t;
 volatile game_state_t game_state = WAITING;
 
 // Estrutura do display
@@ -65,30 +65,41 @@ void init_game() {
     ball.size = 8;
     ball.x = (SCREEN_WIDTH - ball.size) / 2; // x=60
     ball.y = SCREEN_HEIGHT / 2 - ball.size / 2; // y=28
-    ball.vx = 2;
-    ball.vy = 2;
+    ball.vx = 3; // Velocidade aumentada
+    ball.vy = 3; // Velocidade aumentada
 }
 
 // Atualiza o desenho dos elementos na tela
 void draw_game() {
     ssd1306_fill(&ssd, false);
     
+    if (game_state == PLAYING || game_state == PAUSED) {
+        ssd1306_rect(&ssd, player.x, player.y, player.width, player.height, true, true);
+        ssd1306_rect(&ssd, cpu.x, cpu.y, cpu.width, cpu.height, true, true);
+        ssd1306_rect(&ssd, ball.x, ball.y, ball.size, ball.size, true, true);
+    }
+    
     if (game_state == WAITING) {
         int instr1_width = 8 * 8;
         int instr2_width = 8 * 13;
         ssd1306_draw_string(&ssd, "aperte A", (SCREEN_WIDTH - instr1_width) / 2, 24);
         ssd1306_draw_string(&ssd, "para comecar", (SCREEN_WIDTH - instr2_width) / 2, 32);
-    } else {
-        ssd1306_rect(&ssd, player.x, player.y, player.width, player.height, true, true);
-        ssd1306_rect(&ssd, cpu.x, cpu.y, cpu.width, cpu.height, true, true);
-        ssd1306_rect(&ssd, ball.x, ball.y, ball.size, ball.size, true, true);
-        
-        if (game_state == PAUSED) {
-            ssd1306_draw_string(&ssd, "pause", (SCREEN_WIDTH - 5*8) / 2, 30);
-        }
-        if (game_state == GAME_OVER) {
-            ssd1306_draw_string(&ssd, "game over", (SCREEN_WIDTH - 9*8) / 2, 30);
-        }
+    } else if (game_state == PAUSED) {
+        ssd1306_draw_string(&ssd, "pause", (SCREEN_WIDTH - 5*8) / 2, 30);
+    } else if (game_state == GAME_OVER) {
+        int game_over_width = 8 * 9;
+        int restart1_width = 8 * 13;
+        int restart2_width = 8 * 9;
+        ssd1306_draw_string(&ssd, "game over", (SCREEN_WIDTH - game_over_width) / 2, 24);
+        ssd1306_draw_string(&ssd, "aperte B para", (SCREEN_WIDTH - restart1_width) / 2, 34);
+        ssd1306_draw_string(&ssd, "reiniciar", (SCREEN_WIDTH - restart2_width) / 2, 42);
+    } else if (game_state == WIN) {
+        int win_width = 8 * 11;
+        int restart1_width = 8 * 13;
+        int restart2_width = 8 * 9;
+        ssd1306_draw_string(&ssd, "voce ganhou", (SCREEN_WIDTH - win_width) / 2, 24);
+        ssd1306_draw_string(&ssd, "aperte B para", (SCREEN_WIDTH - restart1_width) / 2, 34);
+        ssd1306_draw_string(&ssd, "reiniciar", (SCREEN_WIDTH - restart2_width) / 2, 42);
     }
     
     ssd1306_send_data(&ssd);
@@ -96,13 +107,12 @@ void draw_game() {
 
 // Atualiza a lógica do jogo
 void update_game() {
-    // Atualiza a raquete do jogador com base no joystick (eixo X, GPIO 27)
     uint16_t x_adc = adc_read();
-    // Valores iniciais para teste (substitua pelos reais após depuração)
-    const uint16_t MIN_ADC = 550;  // Valor mínimo real do ADC (esquerda)
-    const uint16_t MAX_ADC = 3450; // Valor máximo real do ADC (direita)
+    const uint16_t MIN_ADC = 600;  // Substitua pelo valor real mínimo (esquerda)
+    const uint16_t MAX_ADC = 3400; // Substitua pelo valor real máximo (direita)
+    const int PLAYER_SPEED = 3;    // Velocidade máxima da raquete do jogador
     
-    // Normaliza o valor do ADC
+    // Calcula a posição desejada do jogador baseada no joystick
     uint16_t normalized_adc;
     if (x_adc < MIN_ADC) {
         normalized_adc = 0;
@@ -111,49 +121,45 @@ void update_game() {
     } else {
         normalized_adc = x_adc - MIN_ADC;
     }
+    int target_x = ((uint32_t)normalized_adc * (SCREEN_WIDTH - player.width)) / (MAX_ADC - MIN_ADC);
     
-    // Remove a inversão para corrigir a direção (direita = x maior)
-    player.x = ((uint32_t)normalized_adc * (SCREEN_WIDTH - player.width)) / (MAX_ADC - MIN_ADC);
+    // Move a raquete do jogador lentamente
+    if (player.x < target_x) {
+        player.x += PLAYER_SPEED;
+        if (player.x > target_x) player.x = target_x;
+    } else if (player.x > target_x) {
+        player.x -= PLAYER_SPEED;
+        if (player.x < target_x) player.x = target_x;
+    }
     
-    // Depuração para encontrar MIN_ADC e MAX_ADC reais
-    static uint16_t min_observed = 4095;
-    static uint16_t max_observed = 0;
-    if (x_adc < min_observed) min_observed = x_adc;
-    if (x_adc > max_observed) max_observed = x_adc;
-    printf("ADC: %u, Player.x: %d, Min: %u, Max: %u\n", x_adc, player.x, min_observed, max_observed);
-    
-    // AI simples para a raquete da CPU
-    int cpu_center = cpu.x + cpu.width / 2;
+    // CPU acompanha a bola diretamente
     int ball_center = ball.x + ball.size / 2;
-    if (ball_center > cpu_center && cpu.x + cpu.width < SCREEN_WIDTH)
-        cpu.x += 1;
-    else if (ball_center < cpu_center && cpu.x > 0)
-        cpu.x -= 1;
+    int cpu_target_x = ball_center - cpu.width / 2;
+    if (cpu_target_x < 0) cpu_target_x = 0;
+    if (cpu_target_x + cpu.width > SCREEN_WIDTH) cpu_target_x = SCREEN_WIDTH - cpu.width;
+    cpu.x = cpu_target_x;
     
-    // Atualiza a posição da bola
+    // Atualiza a posição da bola (velocidade aumentada)
     ball.x += ball.vx;
     ball.y += ball.vy;
     
-    // Colisão com as paredes laterais
     if (ball.x <= 0 || ball.x + ball.size >= SCREEN_WIDTH)
         ball.vx = -ball.vx;
     
-    // Colisão com a raquete da CPU
     if (ball.y <= cpu.y + cpu.height) {
         if (ball.x + ball.size >= cpu.x && ball.x <= cpu.x + cpu.width) {
             ball.vy = -ball.vy;
             ball.y = cpu.y + cpu.height;
-        } else if (ball.y < 0) {
-            game_state = GAME_OVER;
+        } else if (ball.y <= 0) {
+            game_state = WIN;
         }
     }
     
-    // Colisão com a raquete do jogador
     if (ball.y + ball.size >= player.y) {
         if (ball.x + ball.size >= player.x && ball.x <= player.x + player.width) {
             ball.vy = -ball.vy;
             ball.y = player.y - ball.size;
-        } else if (ball.y + ball.size > SCREEN_HEIGHT) {
+        } else if (ball.y + ball.size >= SCREEN_HEIGHT) {
             game_state = GAME_OVER;
         }
     }
@@ -161,7 +167,7 @@ void update_game() {
 
 // Callback para interrupção dos botões
 void gpio_callback(uint gpio, uint32_t events) {
-    static uint32_t last_time_A = 0, last_time_J = 0;
+    static uint32_t last_time_A = 0, last_time_J = 0, last_time_B = 0;
     uint32_t current_time = to_ms_since_boot(get_absolute_time());
     
     if (gpio == BUTTON_A && current_time - last_time_A >= 200) {
@@ -179,12 +185,19 @@ void gpio_callback(uint gpio, uint32_t events) {
         else if (game_state == PAUSED)
             game_state = PLAYING;
     }
+    
+    if (gpio == BUTTON_B && current_time - last_time_B >= 200) {
+        last_time_B = current_time;
+        if (game_state == PLAYING || game_state == PAUSED || game_state == GAME_OVER || game_state == WIN) {
+            init_game();
+            game_state = WAITING;
+        }
+    }
 }
 
 int main() {
     stdio_init_all();
     
-    // Configura o I2C e o display SSD1306
     i2c_init(I2C_PORT, 400 * 1000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
@@ -196,12 +209,10 @@ int main() {
     ssd1306_send_data(&ssd);
     sleep_ms(50);
     
-    // Inicializa o ADC para o joystick (GPIO 27, canal 1)
     adc_init();
-    adc_gpio_init(VRX_PIN); // GPIO 27
-    adc_select_input(1);    // Canal 1 (GPIO 27)
+    adc_gpio_init(VRX_PIN);
+    adc_select_input(1);
     
-    // Configura os botões
     gpio_init(BUTTON_A);
     gpio_set_dir(BUTTON_A, GPIO_IN);
     gpio_pull_up(BUTTON_A);
@@ -214,7 +225,6 @@ int main() {
     gpio_set_dir(SW_PIN, GPIO_IN);
     gpio_pull_up(SW_PIN);
     
-    // Configura os LEDs
     gpio_init(LED_G);
     gpio_set_dir(LED_G, GPIO_OUT);
     gpio_put(LED_G, false);
@@ -227,19 +237,18 @@ int main() {
     gpio_set_dir(LED_B, GPIO_OUT);
     gpio_put(LED_B, false);
     
-    // Registra a callback para os botões
     gpio_set_irq_enabled_with_callback(BUTTON_A, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
     gpio_set_irq_enabled_with_callback(BUTTON_B, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
     gpio_set_irq_enabled_with_callback(SW_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
     
     while (true) {
-        if (game_state == PLAYING)
+        if (game_state == PLAYING) {
             update_game();
+        }
         
-        // Atualiza os LEDs
-        gpio_put(LED_B, game_state == WAITING || game_state == PAUSED); // Azul para WAITING e PAUSED
-        gpio_put(LED_G, game_state == PLAYING); // Verde apenas para PLAYING
-        gpio_put(LED_R, game_state == GAME_OVER); // Vermelho para GAME_OVER
+        gpio_put(LED_B, game_state == WAITING || game_state == PAUSED);
+        gpio_put(LED_G, game_state == PLAYING || game_state == WIN);
+        gpio_put(LED_R, game_state == GAME_OVER);
         
         draw_game();
         sleep_ms(50);
